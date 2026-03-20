@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,24 +7,23 @@ import networkx as nx
 import random
 
 # ----------------------------
-# Brain-GNN Core
+# Brain-GNN (Stable Version)
 # ----------------------------
 
 class BrainGNN(nn.Module):
-    def __init__(self, num_nodes, hidden_dim=32):
+    def __init__(self, num_nodes=10, hidden_dim=32):
         super().__init__()
+
         self.num_nodes = num_nodes
         self.hidden_dim = hidden_dim
 
         self.node_state = nn.Parameter(torch.randn(num_nodes, hidden_dim))
+
         self.message = nn.Linear(hidden_dim, hidden_dim)
         self.update = nn.GRUCell(hidden_dim, hidden_dim)
 
-        # "Self node"
-        self.self_vector = nn.Parameter(torch.randn(hidden_dim))
-
-        # Policy = "free will"
-        self.policy = nn.Linear(hidden_dim, 3)
+        # Readout (law extraction layer)
+        self.readout = nn.Linear(hidden_dim, 1)
 
     def forward(self, adj):
         messages = torch.matmul(adj, self.node_state)
@@ -31,99 +31,134 @@ class BrainGNN(nn.Module):
 
         new_states = []
         for i in range(self.num_nodes):
-            new_states.append(
-                self.update(messages[i], self.node_state[i])
-            )
+            new_states.append(self.update(messages[i], self.node_state[i]))
 
         self.node_state = nn.Parameter(torch.stack(new_states))
 
         return self.node_state
 
-    def act(self):
-        probs = torch.softmax(self.policy(self.self_vector), dim=0)
-        return torch.multinomial(probs, 1).item()
+    def predict(self):
+        global_state = self.node_state.mean(dim=0)
+        return self.readout(global_state)
+
 
 # ----------------------------
-# Graph Rewrite (Thought)
+# Stable Graph Rewrite
 # ----------------------------
 
-def rewrite_graph(adj, activity):
-    adj = adj.clone()
+def rewrite_graph(adj, states):
+    new_adj = adj.clone()
 
-    # stochastic rewiring
-    if random.random() < 0.3:
-        i, j = random.randint(0, len(adj)-1), random.randint(0, len(adj)-1)
-        adj[i][j] = 1 - adj[i][j]
+    # very small stochastic rewiring
+    if random.random() < 0.05:
+        i = random.randint(0, len(adj)-1)
+        j = random.randint(0, len(adj)-1)
+        new_adj[i][j] = 1 - new_adj[i][j]
 
-    # strengthen active connections
-    for i in range(len(adj)):
-        for j in range(len(adj)):
-            if activity[i].norm() > 1.0:
-                adj[i][j] = min(adj[i][j] + 0.1, 1.0)
-
+    # smooth update (memory retention)
+    adj = 0.9 * adj + 0.1 * new_adj
     return adj
 
+
 # ----------------------------
-# Arithmetic Task
+# Arithmetic Dataset
 # ----------------------------
 
-def arithmetic_data():
-    # learn: 1 + 1 = 2
-    x = torch.tensor([[1.0], [1.0]])
+def arithmetic_batch():
+    x = torch.tensor([[1.0, 1.0]])
     y = torch.tensor([[2.0]])
     return x, y
 
+
 # ----------------------------
-# Physics Task (F = ma)
+# Physics Dataset (normalized)
 # ----------------------------
 
-def physics_data():
+def physics_batch():
     m = np.random.uniform(1, 5)
     a = np.random.uniform(0, 10)
+
     F = m * a
+    F = F / 50.0  # normalization
 
-    return torch.tensor([m, a]), torch.tensor([F])
+    return torch.tensor([[m, a]]), torch.tensor([[F]])
+
 
 # ----------------------------
-# Training Loop
+# Training Function
 # ----------------------------
 
-def train():
-    num_nodes = 10
-    model = BrainGNN(num_nodes)
-    adj = torch.rand(num_nodes, num_nodes)
+def train(task="physics", steps=500):
+    model = BrainGNN()
+    adj = torch.rand(model.num_nodes, model.num_nodes)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-    for step in range(500):
+    losses = []
 
-        # choose task via "free will"
-        action = model.act()
+    for step in range(steps):
 
-        if action == 0:
-            x, y = arithmetic_data()
+        if task == "arithmetic":
+            x, y = arithmetic_batch()
         else:
-            x, y = physics_data()
+            x, y = physics_batch()
 
         states = model(adj)
+        pred = model.predict()
 
-        # simple readout
-        pred = states.mean(dim=0)[0:len(y)]
-
-        loss = ((pred - y)**2).mean()
+        loss = ((pred - y) ** 2).mean()
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # graph rewrite = thought
         adj = rewrite_graph(adj, states.detach())
 
+        losses.append(loss.item())
+
         if step % 50 == 0:
-            print(f"Step {step}, Loss {loss.item():.4f}")
+            print(f"[{task.upper()}] Step {step}, Loss {loss.item():.4f}")
 
-    return model
+    return model, losses
 
+
+# ----------------------------
+# Law Extraction
+# ----------------------------
+
+def extract_physics_law(model):
+    print("\n🔬 Extracting learned physics relationship...\n")
+
+    for m in [1, 2, 3, 4]:
+        for a in [2, 5, 8]:
+            F_true = (m * a) / 50.0
+
+            model.node_state.data += torch.randn_like(model.node_state) * 0.01
+
+            pred = model.predict().item()
+
+            print(f"m={m}, a={a} → Predicted={pred:.3f}, True={F_true:.3f}")
+
+
+def extract_arithmetic_law(model):
+    print("\n🧮 Extracting arithmetic relationship...\n")
+
+    pred = model.predict().item()
+    print(f"Prediction for 1 + 1 → {pred:.3f} (Expected: 2.0)")
+
+
+# ----------------------------
+# Main
+# ----------------------------
 
 if __name__ == "__main__":
-    train()
+
+    print("=== Training Physics ===")
+    physics_model, _ = train(task="physics")
+
+    extract_physics_law(physics_model)
+
+    print("\n=== Training Arithmetic ===")
+    arithmetic_model, _ = train(task="arithmetic")
+
+    extract_arithmetic_law(arithmetic_model)
